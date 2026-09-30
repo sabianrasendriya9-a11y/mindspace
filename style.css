@@ -700,6 +700,7 @@ svg {
 input[type="text"],
 input[type="search"],
 input[type="date"],
+input[type="time"],
 select,
 textarea {
   width: 100%;
@@ -739,10 +740,12 @@ input[aria-invalid="true"],
 textarea[aria-invalid="true"] {
   border-color: var(--danger);
 }
-input[type="date"] {
+input[type="date"],
+input[type="time"] {
   color-scheme: light;
 }
-[data-theme="dark"] input[type="date"] {
+[data-theme="dark"] input[type="date"],
+[data-theme="dark"] input[type="time"] {
   color-scheme: dark;
 }
 .input-icon {
@@ -2145,6 +2148,119 @@ input[type="date"] {
 }
 .settings-grid .danger-zone {
   grid-column: 1 / -1;
+}
+
+/* ---------- Akun Google ---------- */
+.account-card {
+  grid-column: 1 / -1;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.account-avatar {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  overflow: hidden;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--purple-soft);
+  color: var(--c2);
+}
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.account-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.account-info strong {
+  overflow-wrap: anywhere;
+}
+.account-info span {
+  font-size: 0.875rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.account-card .hint {
+  margin-top: 0.85rem;
+}
+.setup-steps {
+  list-style: decimal;
+  padding-left: 1.3rem;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+#g-signin {
+  min-height: 44px;
+}
+
+/* ---------- Notifikasi ---------- */
+.nt-options {
+  margin-top: 0.25rem;
+  transition: opacity 0.2s;
+}
+.nt-options:disabled {
+  opacity: 0.5;
+}
+.nt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7.5rem;
+  gap: 1rem;
+  align-items: center;
+  border-top: 1px solid var(--line);
+}
+.nt-row .switch-row {
+  border-top: 0;
+}
+.nt-row .field {
+  margin-bottom: 0;
+}
+.nt-row .field label {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.switch-row small {
+  display: block;
+}
+.switch:disabled,
+input:disabled {
+  cursor: not-allowed;
+}
+@media (max-width: 480px) {
+  .nt-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .nt-row .field {
+    padding-bottom: 0.85rem;
+  }
 }
 
 /* ---------- Banner & toast ---------- */

@@ -26,6 +26,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="style.css" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
       /* Terapkan tema lebih awal agar tidak berkedip saat halaman dimuat. */
       (function () {
@@ -879,6 +880,11 @@
             </div>
 
             <div class="settings-grid">
+              <section class="card account-card" aria-labelledby="s-account">
+                <h2 class="card-title" id="s-account">Akun Google</h2>
+                <div id="account-body"></div>
+              </section>
+
               <section class="card" aria-labelledby="s-profile">
                 <h2 class="card-title" id="s-profile">Profil</h2>
                 <div class="field">
@@ -1006,6 +1012,101 @@
                     role="switch"
                   />
                 </label>
+              </section>
+
+              <section class="card" aria-labelledby="s-notif">
+                <h2 class="card-title" id="s-notif">Notifikasi perangkat</h2>
+                <p class="info-box">
+                  <svg class="icon" aria-hidden="true">
+                    <use href="#i-info" /></svg
+                  ><span
+                    >Pengingat muncul sebagai notifikasi sistem, tetapi hanya
+                    terkirim saat MindSpace <strong>terbuka</strong> di browser
+                    (tab boleh di latar belakang). Notifikasi tidak dikirim saat
+                    browser ditutup karena aplikasi ini tidak memakai
+                    server.</span
+                  >
+                </p>
+                <label class="switch-row" for="nt-enabled">
+                  <span
+                    ><strong>Aktifkan notifikasi</strong
+                    ><small id="nt-status"></small
+                  ></span>
+                  <input
+                    type="checkbox"
+                    id="nt-enabled"
+                    class="switch"
+                    role="switch"
+                  />
+                </label>
+                <fieldset class="nt-options" id="nt-options" disabled>
+                  <legend class="sr-only">Jenis pengingat</legend>
+                  <div class="nt-row">
+                    <label class="switch-row" for="nt-mood-on"
+                      ><span
+                        ><strong>Check-in mood harian</strong
+                        ><small
+                          >Dilewati jika hari ini sudah mencatat mood.</small
+                        ></span
+                      ><input
+                        type="checkbox"
+                        id="nt-mood-on"
+                        class="switch"
+                        role="switch"
+                    /></label>
+                    <div class="field nt-time">
+                      <label for="nt-mood-time">Waktu</label
+                      ><input type="time" id="nt-mood-time" />
+                    </div>
+                  </div>
+                  <div class="nt-row">
+                    <label class="switch-row" for="nt-journal-on"
+                      ><span
+                        ><strong>Menulis jurnal</strong
+                        ><small
+                          >Dilewati jika hari ini sudah menulis jurnal.</small
+                        ></span
+                      ><input
+                        type="checkbox"
+                        id="nt-journal-on"
+                        class="switch"
+                        role="switch"
+                    /></label>
+                    <div class="field nt-time">
+                      <label for="nt-journal-time">Waktu</label
+                      ><input type="time" id="nt-journal-time" />
+                    </div>
+                  </div>
+                  <div class="nt-row">
+                    <label class="switch-row" for="nt-task-on"
+                      ><span
+                        ><strong>Tugas bertenggat</strong
+                        ><small
+                          >Hanya jika ada tugas aktif yang jatuh tempo atau
+                          terlambat.</small
+                        ></span
+                      ><input
+                        type="checkbox"
+                        id="nt-task-on"
+                        class="switch"
+                        role="switch"
+                    /></label>
+                    <div class="field nt-time">
+                      <label for="nt-task-time">Waktu</label
+                      ><input type="time" id="nt-task-time" />
+                    </div>
+                  </div>
+                </fieldset>
+                <div class="btn-row">
+                  <button
+                    type="button"
+                    class="btn btn-soft"
+                    id="nt-test"
+                    data-action="notif-test"
+                  >
+                    Kirim notifikasi uji
+                  </button>
+                </div>
               </section>
 
               <section class="card" aria-labelledby="s-data">

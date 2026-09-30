@@ -8,8 +8,12 @@
   /* ---------------------------------------------------------
      Konstanta
      --------------------------------------------------------- */
+  // Isi dengan OAuth Client ID milik Anda dari Google Cloud Console (lihat petunjuk di Pengaturan → Akun Google).
+  const GOOGLE_CLIENT_ID = "";
+
   const SCHEMA_VERSION = 1;
   const KEYS = {
+    auth: "mindspace_auth",
     journals: "mindspace_journals",
     moods: "mindspace_moods",
     todos: "mindspace_todos",
@@ -34,7 +38,23 @@
     fontSize: "normal",
     showQuote: true,
     reduceMotion: false,
+    notifications: {
+      enabled: false,
+      mood: { on: true, time: "20:00" },
+      journal: { on: false, time: "21:00" },
+      task: { on: true, time: "08:00" },
+      last: { mood: "", journal: "", task: "" },
+    },
   };
+  const newSettings = () => JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const REMINDER_IDS = ["mood", "journal", "task"];
+  const CATCHUP_MINUTES = 120; // pengingat yang terlewat lebih dari 2 jam tidak dikirim
+  const NOTIF_ICON =
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3D6DF2"/><stop offset="1" stop-color="#A08FF7"/></linearGradient></defs><rect width="32" height="32" rx="10" fill="url(#g)"/><path d="M10.5 22V11l5.5 6.5L21.5 11v11" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    );
 
   // score dipakai hanya untuk grafik tren (1 = paling rendah, 6 = paling tinggi)
   const MOODS = [
@@ -388,8 +408,35 @@
     });
   }
 
+  function validNotif(x) {
+    return (
+      isObj(x) &&
+      typeof x.enabled === "boolean" &&
+      REMINDER_IDS.every(
+        (k) =>
+          isObj(x[k]) &&
+          typeof x[k].on === "boolean" &&
+          TIME_RE.test(str(x[k].time)),
+      ) &&
+      (x.last === undefined || isObj(x.last))
+    );
+  }
+  function sanitizeNotif(x) {
+    const out = newSettings().notifications;
+    if (!isObj(x)) return out;
+    out.enabled = x.enabled === true;
+    REMINDER_IDS.forEach((k) => {
+      if (isObj(x[k])) {
+        out[k].on = x[k].on === true;
+        if (TIME_RE.test(str(x[k].time))) out[k].time = x[k].time;
+      }
+      if (isObj(x.last) && isDateKey(x.last[k])) out.last[k] = x.last[k];
+    });
+    return out;
+  }
+
   function parseSettings(s, strict) {
-    const value = { ...DEFAULT_SETTINGS };
+    const value = newSettings();
     const errors = [];
     if (!isObj(s))
       return {
@@ -431,6 +478,12 @@
       (x) => typeof x === "boolean",
       "reduceMotion harus true atau false.",
     );
+    check(
+      "notifications",
+      validNotif,
+      "Pengaturan notifikasi tidak valid (enabled, mood, journal, task, dan format waktu HH:MM).",
+    );
+    value.notifications = sanitizeNotif(value.notifications);
     value.name = value.name.trim();
     return { value, errors: strict ? errors : [] };
   }
@@ -499,7 +552,8 @@
     journals: [],
     moods: [],
     todos: [],
-    settings: { ...DEFAULT_SETTINGS },
+    settings: newSettings(),
+    auth: null,
     ui: {
       route: "dashboard",
       journalFilters: { q: "", mood: "", from: "", to: "", sort: "newest" },
@@ -543,6 +597,19 @@
       store.read(KEYS.settings, {}, isObj),
       false,
     ).value;
+    const auth = store.read(KEYS.auth, null, (v) => v === null || isObj(v));
+    state.auth =
+      auth && typeof auth.email === "string" && typeof auth.sub === "string"
+        ? {
+            sub: auth.sub,
+            name: str(auth.name),
+            email: auth.email,
+            picture: str(auth.picture).startsWith("https://")
+              ? auth.picture
+              : "",
+            signedInAt: str(auth.signedInAt),
+          }
+        : null;
     sortData();
     if (dropped > 0 || store.corrupted.length) {
       setTimeout(
@@ -729,11 +796,140 @@
 
   function renderChrome() {
     const n = state.settings.name;
+    const a = state.auth;
     $$(".profile-name").forEach((el) => {
-      el.textContent = n || "Atur nama panggilan";
+      el.textContent = n || (a ? a.email : "Atur nama panggilan");
     });
     $$(".profile-avatar").forEach((el) => {
-      el.innerHTML = n ? esc(n.charAt(0).toUpperCase()) : icon("user");
+      el.innerHTML =
+        a && a.picture
+          ? `<img src="${esc(a.picture)}" alt="" referrerpolicy="no-referrer" width="36" height="36">`
+          : n
+            ? esc(n.charAt(0).toUpperCase())
+            : icon("user");
+    });
+  }
+
+  /* ---------------------------------------------------------
+     Login Google (Google Identity Services)
+     Catatan: ini hanya mengidentifikasi akun di sisi browser.
+     Data tetap di localStorage perangkat ini dan tidak dikunci.
+     --------------------------------------------------------- */
+  let gisInitialized = false;
+
+  function decodeJwt(token) {
+    const part = String(token).split(".")[1];
+    if (!part) throw new Error("Token tidak valid");
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+    return JSON.parse(
+      new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0))),
+    );
+  }
+
+  function handleGoogleCredential(resp) {
+    try {
+      const p = decodeJwt(resp && resp.credential);
+      const issOk =
+        p.iss === "accounts.google.com" ||
+        p.iss === "https://accounts.google.com";
+      if (
+        !issOk ||
+        p.aud !== GOOGLE_CLIENT_ID ||
+        !p.exp ||
+        p.exp * 1000 < Date.now() ||
+        !p.sub ||
+        typeof p.email !== "string"
+      )
+        throw new Error("Token ditolak");
+      state.auth = {
+        sub: String(p.sub),
+        name: str(p.name),
+        email: p.email,
+        picture: str(p.picture).startsWith("https://") ? p.picture : "",
+        signedInAt: new Date().toISOString(),
+      };
+      if (!state.settings.name && p.given_name)
+        state.settings.name = String(p.given_name).trim().slice(0, LIMITS.name);
+      save("auth", "settings");
+      toast(`Masuk sebagai ${p.email}`);
+      refresh();
+    } catch (e) {
+      console.warn("[MindSpace] Login Google gagal", e);
+      toast("Login Google gagal diverifikasi. Coba lagi.", "error");
+    }
+  }
+
+  function signOut() {
+    try {
+      if (window.google && google.accounts && google.accounts.id)
+        google.accounts.id.disableAutoSelect();
+    } catch (e) {
+      /* abaikan */
+    }
+    state.auth = null;
+    save("auth");
+    toast("Anda telah keluar. Data di perangkat ini tetap tersimpan.", "info");
+    refresh();
+  }
+
+  function renderAccount(attempt = 0) {
+    const box = $("#account-body");
+    if (!box || state.ui.route !== "settings") return;
+    const a = state.auth;
+    if (a) {
+      box.innerHTML = `<div class="account-row">
+          <span class="account-avatar">${a.picture ? `<img src="${esc(a.picture)}" alt="" referrerpolicy="no-referrer" width="48" height="48">` : icon("user")}</span>
+          <div class="account-info"><strong>${esc(a.name || a.email)}</strong><span>${esc(a.email)}</span></div>
+          <button type="button" class="btn btn-ghost" data-action="sign-out">Keluar</button>
+        </div>
+        <p class="hint">Login hanya menampilkan identitas Anda. Jurnal, mood, dan tugas tetap disimpan di browser ini dan tidak dikirim ke server mana pun.</p>`;
+      return;
+    }
+    if (!GOOGLE_CLIENT_ID) {
+      box.innerHTML = `<p class="info-box">${icon("info")}<span>Login Google memerlukan <strong>Client ID</strong> milik Anda. Tanpa itu, tombol login tidak bisa ditampilkan.</span></p>
+        <ol class="setup-steps">
+          <li>Buka <strong>Google Cloud Console → APIs &amp; Services → Credentials</strong>.</li>
+          <li>Buat <strong>OAuth client ID</strong> bertipe <em>Web application</em>.</li>
+          <li>Pada <em>Authorized JavaScript origins</em>, tambahkan <code>http://localhost:5500</code> dan <code>http://127.0.0.1:5500</code> (sesuaikan port Live Server).</li>
+          <li>Salin Client ID, lalu tempel ke konstanta <code>GOOGLE_CLIENT_ID</code> di bagian atas <code>script.js</code>.</li>
+          <li>Muat ulang halaman lewat Live Server.</li>
+        </ol>`;
+      return;
+    }
+    if (location.protocol === "file:") {
+      box.innerHTML = `<p class="field-error">Login Google tidak berfungsi saat file dibuka langsung (file://). Jalankan lewat Live Server atau <code>http://localhost</code>.</p>`;
+      return;
+    }
+    if (!(window.google && google.accounts && google.accounts.id)) {
+      if (attempt >= 12) {
+        box.innerHTML =
+          '<p class="field-error">Layanan Google tidak dapat dimuat. Periksa koneksi internet atau pemblokir skrip, lalu muat ulang halaman.</p>';
+      } else {
+        box.innerHTML = '<p class="hint">Memuat layanan Google…</p>';
+        setTimeout(() => {
+          if (!state.auth) renderAccount(attempt + 1);
+        }, 500);
+      }
+      return;
+    }
+    if (!gisInitialized) {
+      google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleGoogleCredential,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+      });
+      gisInitialized = true;
+    }
+    box.innerHTML = `<div id="g-signin"></div><p class="hint" style="margin-top:.85rem">Login bersifat opsional. Data Anda tidak dikirim ke server mana pun dan <strong>tidak terkunci</strong>: siapa pun yang memakai browser ini tetap dapat melihatnya.</p>`;
+    google.accounts.id.renderButton($("#g-signin"), {
+      theme: effectiveTheme() === "dark" ? "filled_black" : "outline",
+      size: "large",
+      text: "signin_with",
+      shape: "pill",
+      locale: "id",
+      width: 280,
     });
   }
 
@@ -1902,6 +2098,256 @@
   }
 
   /* ---------------------------------------------------------
+     NOTIFIKASI PERANGKAT
+     Pengingat dijadwalkan di dalam halaman (bukan push server),
+     sehingga hanya terkirim saat MindSpace terbuka di browser/PWA.
+     --------------------------------------------------------- */
+  const notifSupported = () => "Notification" in window;
+  let notifTimer = null;
+  let swRegistered = false;
+
+  function registerSW() {
+    if (
+      swRegistered ||
+      !("serviceWorker" in navigator) ||
+      !/^https?:$/.test(location.protocol)
+    )
+      return;
+    swRegistered = true;
+    navigator.serviceWorker
+      .register("sw.js")
+      .catch((e) =>
+        console.warn("[MindSpace] Service worker gagal didaftarkan", e),
+      );
+  }
+
+  function canNotify() {
+    return (
+      notifSupported() &&
+      Notification.permission === "granted" &&
+      state.settings.notifications.enabled
+    );
+  }
+
+  async function showDeviceNotification(title, body, tag, hash) {
+    const opts = {
+      body,
+      tag,
+      icon: NOTIF_ICON,
+      badge: NOTIF_ICON,
+      lang: "id",
+      data: { hash },
+    };
+    try {
+      if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) {
+          await reg.showNotification(title, opts);
+          return true;
+        }
+      }
+      const n = new Notification(title, opts);
+      n.onclick = () => {
+        window.focus();
+        if (ROUTES[hash.slice(1)]) location.hash = hash;
+        n.close();
+      };
+      return true;
+    } catch (e) {
+      console.warn("[MindSpace] Gagal menampilkan notifikasi", e);
+      return false;
+    }
+  }
+
+  const REMINDERS = {
+    mood() {
+      if ((moodsByDate().get(todayKey()) || []).length) return null;
+      return {
+        title: "Waktunya check-in mood",
+        body: "Bagaimana perasaanmu hari ini? Catat dalam satu menit.",
+        hash: "#mood",
+      };
+    },
+    journal() {
+      const today = todayKey();
+      if (state.journals.some((j) => localKey(j.createdAt) === today))
+        return null;
+      return {
+        title: "Saatnya menulis jurnal",
+        body: "Luangkan beberapa menit untuk menuliskan harimu.",
+        hash: "#journal",
+      };
+    },
+    task() {
+      const today = todayKey();
+      const open = state.todos.filter(
+        (t) => !t.done && t.due && t.due <= today,
+      );
+      if (!open.length) return null;
+      const late = open.filter((t) => t.due < today).length;
+      const dueToday = open.length - late;
+      const parts = [];
+      if (dueToday) parts.push(`${dueToday} tugas bertenggat hari ini`);
+      if (late) parts.push(`${late} tugas terlambat`);
+      return {
+        title: "Pengingat tugas",
+        body: parts.join(", ") + ".",
+        hash: "#todo",
+      };
+    },
+  };
+
+  function checkReminders() {
+    if (!canNotify()) return;
+    const n = state.settings.notifications;
+    const now = new Date();
+    const today = dateKey(now);
+    const mins = now.getHours() * 60 + now.getMinutes();
+    let changed = false;
+    REMINDER_IDS.forEach((id) => {
+      const cfg = n[id];
+      if (!cfg.on || n.last[id] === today) return;
+      const [h, m] = cfg.time.split(":").map(Number);
+      const diff = mins - (h * 60 + m);
+      if (diff < 0 || diff > CATCHUP_MINUTES) return;
+      n.last[id] = today;
+      changed = true;
+      const msg = REMINDERS[id]();
+      if (msg)
+        showDeviceNotification(
+          msg.title,
+          msg.body,
+          "mindspace-" + id,
+          msg.hash,
+        );
+    });
+    if (changed) save("settings");
+  }
+
+  function startScheduler() {
+    clearInterval(notifTimer);
+    notifTimer = null;
+    if (!canNotify()) return;
+    registerSW();
+    checkReminders();
+    notifTimer = setInterval(checkReminders, 30000);
+  }
+
+  async function enableNotifications() {
+    if (!notifSupported()) {
+      toast("Browser ini tidak mendukung notifikasi.", "error");
+      return false;
+    }
+    if (!window.isSecureContext) {
+      toast(
+        "Notifikasi memerlukan HTTPS atau localhost. Jalankan lewat Live Server.",
+        "error",
+        7000,
+      );
+      return false;
+    }
+    let perm = Notification.permission;
+    if (perm === "default") {
+      try {
+        perm = await Notification.requestPermission();
+      } catch (e) {
+        perm = Notification.permission;
+      }
+    }
+    if (perm !== "granted") {
+      toast(
+        perm === "denied"
+          ? "Izin notifikasi diblokir. Izinkan lewat pengaturan situs di browser, lalu coba lagi."
+          : "Izin notifikasi belum diberikan.",
+        "error",
+        7000,
+      );
+      return false;
+    }
+    state.settings.notifications.enabled = true;
+    registerSW();
+    return true;
+  }
+
+  function notifStatusText() {
+    if (!notifSupported()) return "Browser ini tidak mendukung notifikasi.";
+    if (!window.isSecureContext) return "Memerlukan HTTPS atau localhost.";
+    const p = Notification.permission;
+    if (p === "denied")
+      return "Izin diblokir di browser. Ubah lewat pengaturan situs.";
+    if (p === "granted")
+      return state.settings.notifications.enabled
+        ? "Aktif. Izin sudah diberikan."
+        : "Nonaktif. Izin sudah diberikan.";
+    return "Belum meminta izin. Akan diminta saat diaktifkan.";
+  }
+
+  function renderNotifSettings() {
+    const n = state.settings.notifications;
+    const usable =
+      notifSupported() &&
+      window.isSecureContext &&
+      Notification.permission !== "denied";
+    $("#nt-enabled").checked = n.enabled && canNotify();
+    $("#nt-enabled").disabled = !usable;
+    $("#nt-status").textContent = notifStatusText();
+    $("#nt-options").disabled = !n.enabled;
+    REMINDER_IDS.forEach((id) => {
+      $(`#nt-${id}-on`).checked = n[id].on;
+      $(`#nt-${id}-time`).value = n[id].time;
+    });
+    $("#nt-test").disabled = !usable;
+  }
+
+  function commitNotif() {
+    save("settings");
+    flashSaved();
+    renderNotifSettings();
+    startScheduler();
+  }
+
+  async function sendTestNotification() {
+    if (!notifSupported() || !window.isSecureContext) {
+      toast("Notifikasi tidak tersedia di konteks ini.", "error");
+      return;
+    }
+    if (Notification.permission === "default") {
+      try {
+        await Notification.requestPermission();
+      } catch (e) {
+        /* abaikan */
+      }
+    }
+    if (Notification.permission !== "granted") {
+      renderNotifSettings();
+      toast("Izin notifikasi belum diberikan.", "error");
+      return;
+    }
+    registerSW();
+    // beri waktu service worker siap sebelum mencoba
+    if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+      try {
+        await navigator.serviceWorker.ready;
+      } catch (e) {
+        /* abaikan */
+      }
+    }
+    const ok = await showDeviceNotification(
+      "MindSpace",
+      "Notifikasi uji berhasil. Pengingatmu akan tampil seperti ini.",
+      "mindspace-test",
+      "#dashboard",
+    );
+    toast(
+      ok
+        ? "Notifikasi uji dikirim"
+        : "Gagal menampilkan notifikasi. Periksa pengaturan sistem perangkat.",
+      ok ? "success" : "error",
+    );
+    renderNotifSettings();
+  }
+
+  /* ---------------------------------------------------------
      PENGATURAN
      --------------------------------------------------------- */
   function renderSettings() {
@@ -1919,6 +2365,8 @@
     });
     $("#set-quote").checked = s.showQuote;
     $("#set-motion").checked = s.reduceMotion;
+    renderAccount();
+    renderNotifSettings();
     const size = store.sizeBytes();
     $("#data-summary").textContent =
       `Tersimpan di browser ini: ${state.journals.length} jurnal, ${state.moods.length} catatan mood, ${state.todos.length} tugas` +
@@ -1942,6 +2390,7 @@
     renderChrome();
     save("settings");
     flashSaved();
+    renderAccount();
   }
 
   function buildExport() {
@@ -2051,6 +2500,7 @@
     sortData();
     save("journals", "moods", "todos", "settings");
     applySettings();
+    startScheduler();
     refresh();
   }
 
@@ -2068,7 +2518,9 @@
     state.journals = [];
     state.moods = [];
     state.todos = [];
-    state.settings = { ...DEFAULT_SETTINGS };
+    state.settings = newSettings();
+    state.auth = null;
+    startScheduler();
     state.ui.journalFilters = {
       q: "",
       mood: "",
@@ -2183,6 +2635,12 @@
       renderMonth();
     },
 
+    "sign-out"() {
+      signOut();
+    },
+    "notif-test"() {
+      sendTestNotification();
+    },
     export() {
       exportData();
     },
@@ -2323,6 +2781,57 @@
       if (file) importFile(file);
     });
 
+    // Notifikasi
+    $("#nt-enabled").addEventListener("change", async (e) => {
+      if (e.target.checked) {
+        const ok = await enableNotifications();
+        if (!ok) {
+          e.target.checked = false;
+          renderNotifSettings();
+          return;
+        }
+      } else {
+        state.settings.notifications.enabled = false;
+      }
+      commitNotif();
+    });
+    REMINDER_IDS.forEach((id) => {
+      $(`#nt-${id}-on`).addEventListener("change", (e) => {
+        state.settings.notifications[id].on = e.target.checked;
+        commitNotif();
+      });
+      $(`#nt-${id}-time`).addEventListener("change", (e) => {
+        const v = e.target.value;
+        if (!TIME_RE.test(v)) {
+          e.target.value = state.settings.notifications[id].time;
+          toast("Format waktu tidak valid.", "error");
+          return;
+        }
+        const n = state.settings.notifications;
+        n[id].time = v;
+        // waktu yang sudah lewat hari ini tidak memicu pengingat langsung; waktu yang akan datang boleh
+        const [h, m] = v.split(":").map(Number);
+        const d = new Date();
+        n.last[id] =
+          d.getHours() * 60 + d.getMinutes() >= h * 60 + m ? todayKey() : "";
+        commitNotif();
+      });
+    });
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", (e) => {
+        const hash =
+          e.data &&
+          e.data.type === "navigate" &&
+          typeof e.data.hash === "string"
+            ? e.data.hash
+            : "";
+        if (ROUTES[hash.slice(1)]) {
+          userNavigated = true;
+          location.hash = hash;
+        }
+      });
+    }
+
     // Grafik responsif
     let lastW = window.innerWidth;
     window.addEventListener(
@@ -2337,7 +2846,9 @@
 
     // Perbarui sapaan & tanggal saat tab kembali aktif
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && state.ui.route === "dashboard") renderDashboard();
+      if (document.hidden) return;
+      checkReminders();
+      if (state.ui.route === "dashboard") renderDashboard();
     });
   }
 
@@ -2354,6 +2865,7 @@
     renderChrome();
     route();
     hideBusy();
+    startScheduler();
   }
 
   if (document.readyState === "loading")
